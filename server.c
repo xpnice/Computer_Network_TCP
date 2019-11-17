@@ -55,21 +55,34 @@ typedef struct
     int poll_pos; //该套接字在poll_fds结构体数组中的下标
 } SOCK;
 
+
 int my_write_tofile(SOCK *fd)
 {
-    char name[30];
-    sprintf(name, "%d.%d.txt", fd->stuno, fd->pid);
+    char name[40];
+    sprintf(name, "./txt/%d.%d.pid.txt", fd->stuno, fd->pid);
+    if (access("./txt/", 0) == -1)                             //不存在文件夹
+        mkdir("./txt", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH); //新建文件夹
     int file = open(name, O_WRONLY | O_CREAT | O_APPEND);
     if (file == -1)
     {
-        perror("open file error");
+        perror("open");
         return -1;
     }
     char s[50];
-    sprintf(s, "%d\n%d\n%s\n", fd->stuno, fd->pid, fd->time);
+
+    //sprintf(s, "%d\n%d\n%s\n", fd->stuno, fd->pid, fd->time);
+    int offset = 0;
+    offset += sprintf(s, "%d\n%d\n", fd->stuno, fd->pid);
+    int i;
+    for (i = 0; i < 19; i++)
+    {
+        offset += sprintf(s + offset, "%c", fd->time[i]);
+    }
+    sprintf(s + offset, "\n");
     write(file, s, strlen(s));
     write(file, fd->str, fd->lenStr);
     close(file);
+
     return 1;
 }
 
@@ -86,7 +99,7 @@ int read_error_judge(int ret, SOCK *fd, int *connect_num)
     {
         if (fd->state.step == END)
         {
-            printf("ss%d[%d] 正常退出\n", fd->socket,fd->pos);
+            printf("ss%d[%d] 正常退出\n", fd->socket, fd->pos);
             //实现写入文件的操作
             if (my_write_tofile(fd))
                 printf("ss%d成功写入文件\n", fd->socket);
@@ -377,7 +390,7 @@ int init_SOCK(SOCK *fd, int socket_fd)
     fd->n_str = 0;
     fd->lenStr = rand() % 67232 + 32768;
     fd->poll_pos = 0;
-    fd->str=NULL;
+    fd->str = NULL;
     return 1;
 }
 
@@ -839,7 +852,7 @@ void FD_init(fd_set *rest, fd_set *west, int server_sockfd, SOCK **client_SOCK)
 
 void POLLFD_init(struct pollfd poll_fds[], int server_sockfd, SOCK **client_SOCK, int *use_now)
 {
-    memset(poll_fds, 0, sizeof(poll_fds)); //清空数组
+    memset(poll_fds, 0, sizeof(struct pollfd)*MAXCONNECTION); //清空数组
     poll_fds[0].fd = server_sockfd;        //把监听套接字放入数组
     poll_fds[0].events = POLLIN;           //设置关注读事件
     (*use_now)++;
@@ -856,43 +869,6 @@ void POLLFD_init(struct pollfd poll_fds[], int server_sockfd, SOCK **client_SOCK
     }
 }
 
-// int EPOLLFD_init(int *efd, int server_sockfd, SOCK **client_SOCK)
-// {
-//     struct epoll_event epoll_temp;
-//     *efd = epoll_create1(1);
-//     if (*efd == -1)
-//     {
-//         perror("epoll_create");
-//         printf("你错了\n");
-//         return -1;
-//     }
-//     epoll_temp.data.fd = server_sockfd; //监听socket
-//     epoll_temp.events = EPOLLIN;
-//     //将监听socket置入
-//     int epoll_ret = epoll_ctl(*efd, EPOLL_CTL_ADD, server_sockfd, &epoll_temp);
-//     if (epoll_ret == -1)
-//     {
-//         perror("epoll_ctl");
-//         return -1;
-//     }
-//     int i;
-//     for (i = 0; i < MAXCONNECTION; i++) //遍历已使用套接字数组
-//     {
-//         if (client_SOCK[i] != NULL) //如果套接字正在被使用
-//         {
-//             //加入监听事件
-//             epoll_temp.data.fd = client_SOCK[i]->socket;
-//             epoll_temp.events = EPOLLIN | EPOLLOUT;
-//             int epoll_ret = epoll_ctl(*efd, EPOLL_CTL_ADD, client_SOCK[i]->socket, &epoll_temp);
-//             if (epoll_ret == -1)
-//             {
-//                 perror("epoll_ctl");
-//                 return -1;
-//             }
-//         }
-//     }
-// }
-
 int EPOLLFD_init(int efd, int server_sockfd, SOCK **client_SOCK)
 {
     struct epoll_event epoll_temp;
@@ -906,22 +882,6 @@ int EPOLLFD_init(int efd, int server_sockfd, SOCK **client_SOCK)
         perror("epoll_ctl");
         return -1;
     }
-    // int i;
-    // for (i = 0; i < MAXCONNECTION; i++) //遍历已使用套接字数组
-    // {
-    //     if (client_SOCK[i] != NULL) //如果套接字正在被使用
-    //     {
-    //         //加入监听事件
-    //         epoll_temp.data.fd = client_SOCK[i]->socket;
-    //         epoll_temp.events = EPOLLIN | EPOLLOUT;
-    //         int epoll_ret = epoll_ctl(*efd, EPOLL_CTL_ADD, client_SOCK[i]->socket, &epoll_temp);
-    //         if (epoll_ret == -1)
-    //         {
-    //             perror("epoll_ctl");
-    //             return -1;
-    //         }
-    //     }
-    // }
 }
 
 void wait2connect(time_t *start_time, int connect_now)
@@ -1008,7 +968,7 @@ void poll_nonblock(int server_sockfd)
     int connect_now = 0;  //连接个数
 
     /*poll的结构体数组*/
-    struct pollfd poll_fds[1024];
+    struct pollfd poll_fds[MAXCONNECTION];
 
     while (1)
     {
@@ -1064,7 +1024,7 @@ void epoll_nonblock(int server_sockfd)
     int connect_now = 0;  //连接个数
 
     /*epoll变量*/
-    struct epoll_event epoll_fds[1024];
+    struct epoll_event epoll_fds[MAXCONNECTION];
     int efd;
     efd = epoll_create1(0);
     if (efd == -1)
@@ -1099,8 +1059,8 @@ void epoll_nonblock(int server_sockfd)
 int main(int argc, char *argv[])
 {
     /*服务器变量*/
-    struct server_conf server; //server数据结构
-
+    srand((unsigned int)time(0));
+    struct server_conf server; //server数据结构SS
     int server_sockfd;                  //监听套接字
     memset(&server, 0, sizeof(server)); //server端配置信息清零
 
@@ -1110,49 +1070,14 @@ int main(int argc, char *argv[])
     server_tcp_init(server, &server_sockfd); //socket+nonblock?+reuse+bind+listen
 
     /*多client端处理*/
-    while (1)
-    {
-        if (server.select == SELECT)
-            select_nonblock(server_sockfd);
-        else if (server.select == POLL)
-            poll_nonblock(server_sockfd);
-        else if (server.select == EPOLL)
-            epoll_nonblock(server_sockfd);
 
-        // for (i = 0; i < epoll_return; i++)
-        // {
-        //     if ((epoll_fds[i].events & EPOLLERR) ||
-        //         (epoll_fds[i].events & EPOLLHUP) ||
-        //         (!(epoll_fds[i].events & EPOLLIN)))
-        //     {
+    if (server.select == SELECT)
+        select_nonblock(server_sockfd); //select非阻塞模式
+    else if (server.select == POLL)
+        poll_nonblock(server_sockfd); //poll非阻塞模式
+    else if (server.select == EPOLL)
+        epoll_nonblock(server_sockfd); //epoll非阻塞模式
 
-        //         perror("epoll error\n");
-        //         //close(events[i].data.fd);
-        //         continue;
-        //     }
-        //     else if (server_sockfd == epoll_fds[i].data.fd)
-        //     {
-        //         //处理新的请求连接事件
-        //         my_new_connection_EPOLL(server_sockfd, epoll_fds, epoll_return, &connect_now, Q, client_SOCK, client, efd);
-        //     }
-        //     else
-        //     {
-        //         int j;
-        //         for (j = 0; j < MAXCONNECTION; j++)
-        //         {
-        //             if (client_SOCK[j]) //正在使用的套接字
-        //             {
-        //                 func_return = my_read_EPOLL(client_SOCK[j], epoll_fds, epoll_return, &finished_num);
-        //                 if (BREAK == handle_socket_EPOLL(func_return, i, Q, &client_SOCK[j], &connect_now, finished_num, efd))
-        //                     break;
-        //                 func_return = my_write_EPOLL(client_SOCK[j], epoll_fds, epoll_return);
-        //                 if (BREAK == handle_socket_EPOLL(func_return, i, Q, &client_SOCK[j], &connect_now, finished_num, efd))
-        //                     break;
-        //             }
-        //         }
-        //     }
-        // }
-    }
     close(server_sockfd);
     return 0;
 }

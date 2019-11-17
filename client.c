@@ -35,6 +35,7 @@
 #define QUIT_ERROR -1
 #define MISSION_COMPLETE -2
 #define UNABLE_RW -3
+
 typedef struct
 {
     int step; //0-4对应5个收发状态
@@ -312,7 +313,7 @@ int my_write_tofile(SOCK *fd)
 {
     char name[40];
     sprintf(name, "./txt/%d.%d.pid.txt", fd->stuno, fd->pid);
-    if (access("./txt/", 0) == -1) //不存在文件夹
+    if (access("./txt/", 0) == -1)                             //不存在文件夹
         mkdir("./txt", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH); //新建文件夹
     int file = open(name, O_WRONLY | O_CREAT | O_APPEND);
     if (file == -1)
@@ -848,123 +849,143 @@ void client_SOCK_init(SOCK **client_SOCK, struct client_conf client)
         client_SOCK[k] = NULL;
     }
 }
-int main(int argc, char *argv[])
+void select_nonblock(struct client_conf client)
 {
-    /*客户端基本变量*/
-    struct client_conf client;             //client数据结构
-    memset(&client, 0, sizeof(client));    //client端配置信息清零
-    client_conf_argv(argc, argv, &client); //根据main函数参数配置client
-    print_client_conf(client);             //显示client配置信息
-
     SOCK **client_SOCK = (SOCK **)malloc(client.num * sizeof(SOCK *)); //客户端SOCK指针数组,最多1000个连接
     client_SOCK_init(client_SOCK, client);                             //客户端SOCK指针数组初始化
+    int k = 0;                                                         //循环标志
+    char reply[200];                                                   //数据传送的缓冲区
+    int create = 0;                                                    //已经创建连接的计数，不受重连影响，因而100个连接中的某一个断开，则在他的套接字被删除后和重连前，creat是大于实际连接数的
+    int quit = 0;                                                      //所有交互已完成标志
+    int finished_num = 0;                                              //完成连接计数
+    fd_set west;                                                       //读操作符集
+    fd_set rest;                                                       //写操作符集
+    struct timeval tv;                                                 //select等待时间 NULL阻塞
+    long start_mt = longgetSystemTime();                               //开始时间，毫秒精度
+    while (1)
+    {
 
-    /*垃圾变量*/
-    int k = 0; //循环标志
-
-    /*连接维护变量*/
-    char reply[200];      //数据传送的缓冲区
-    int create = 0;       //已经创建连接的计数，不受重连影响，因而100个连接中的某一个断开，则在他的套接字被删除后和重连前，creat是大于实际连接数的
-    int quit = 0;         //所有交互已完成标志
-    int finished_num = 0; //完成连接计数
-
-    /*select用变量*/
-    fd_set west;                         //读操作符集
-    fd_set rest;                         //写操作符集
-    struct timeval tv;                   //select等待时间 NULL阻塞
-    long start_mt = longgetSystemTime(); //开始时间，毫秒精度
-
-    /*poll用变量*/
-    struct pollfd poll_fds[MAX_CON];
-
-    /*epoll用变量*/
-    struct epoll_event epoll_fds[MAX_CON];
-    int efd;
+        my_new_connection(&create, &start_mt, client_SOCK, client); //监听到并建立新的连接
+        if (quit)
+            break;
+        tv.tv_sec = 0;  //select等待秒
+        tv.tv_usec = 0; //select等待毫秒
+        FD_init(&rest, &west, client, client_SOCK);
+        int select_ret = select(FD_SETSIZE, &rest, &west, NULL, &tv);
+        if (select_ret == -1)
+        {
+            perror("select");
+            exit(-1);
+        }
+        else
+            for (k = 0; k < client.num; k++)
+            {
+                if (client_SOCK[k])
+                {
+                    memset(reply, 0, 200);
+                    int read_return = my_read_SELECT(client_SOCK[k], &rest, reply);                                 //从服务器读
+                    my_disconnect_SELECT(client, client_SOCK, &finished_num, &quit, &west, &rest, read_return, k);  //处理读的返回值
+                    int write_return = my_write_SELECT(client_SOCK[k], &west, k);                                   //从服务器写
+                    my_disconnect_SELECT(client, client_SOCK, &finished_num, &quit, &west, &rest, write_return, k); //处理写的返回值
+                }
+            }
+    }
+}
+void poll_nonblock(struct client_conf client)
+{
+    SOCK **client_SOCK = (SOCK **)malloc(client.num * sizeof(SOCK *)); //客户端SOCK指针数组,最多1000个连接
+    client_SOCK_init(client_SOCK, client);                             //客户端SOCK指针数组初始化
+    int k = 0;                                                         //循环标志
+    char reply[200];                                                   //数据传送的缓冲区
+    int create = 0;                                                    //已经创建连接的计数，不受重连影响，因而100个连接中的某一个断开，则在他的套接字被删除后和重连前，creat是大于实际连接数的
+    int quit = 0;                                                      //所有交互已完成标志
+    int finished_num = 0;                                              //完成连接计数
+    struct pollfd poll_fds[MAX_CON];                                   //poll结构体数组
+    long start_mt = longgetSystemTime();                               //开始时间，毫秒精度
+    while (1)
+    {
+        my_new_connection(&create, &start_mt, client_SOCK, client);
+        if (quit)
+            break;
+        int now_use_pos = 0;
+        POLLFD_init(poll_fds, client, client_SOCK, &now_use_pos);
+        int nfds = MAX_CON; //当前需要监听的套接字数量
+        int poll_return = poll(poll_fds, nfds, 0);
+        if (poll_return < 0)
+        {
+            printf("poll error\n");
+            exit(1);
+        }
+        else
+        {
+            for (k = 0; k < client.num; k++)
+            {
+                if (client_SOCK[k])
+                {
+                    memset(reply, 0, 200);
+                    int pos = client_SOCK[k]->poll_pos;
+                    int read_return = my_read_POLL(client_SOCK[k], poll_fds[pos], reply);
+                    my_disconnect_POLL(client, client_SOCK, &finished_num, &quit, read_return, k);
+                    int write_return = my_write_POLL(client_SOCK[k], poll_fds[pos], k);
+                    my_disconnect_POLL(client, client_SOCK, &finished_num, &quit, write_return, k);
+                }
+            }
+        }
+    }
+}
+void epoll_nonblock(struct client_conf client)
+{
+    struct epoll_event epoll_fds[MAX_CON];                             //epoll结构体数组
+    int efd;                                                           //epoll建立的文件描述符
+    SOCK **client_SOCK = (SOCK **)malloc(client.num * sizeof(SOCK *)); //客户端SOCK指针数组,最多1000个连接
+    client_SOCK_init(client_SOCK, client);                             //客户端SOCK指针数组初始化
+    int k = 0;                                                         //循环标志
+    char reply[200];                                                   //数据传送的缓冲区
+    int create = 0;                                                    //已经创建连接的计数，不受重连影响，因而100个连接中的某一个断开，则在他的套接字被删除后和重连前，creat是大于实际连接数的
+    int quit = 0;                                                      //所有交互已完成标志
+    int finished_num = 0;                                              //完成连接计数
+    long start_mt = longgetSystemTime();                               //开始时间，毫秒精度
     efd = epoll_create1(0);
     if (efd == -1)
     {
         perror("epoll_create");
         exit(0);
     }
-
     while (1)
     {
-        if (client.select == SELECT)
+        my_new_connection_EPOLL(&create, &start_mt, client_SOCK, client, efd);
+        //printf("1");
+        if (quit)
+            break;
+        int epoll_return = epoll_wait(efd, epoll_fds, MAX_CON, 0);
+        for (k = 0; k < client.num; k++)
         {
-            my_new_connection(&create, &start_mt, client_SOCK, client); //监听到并建立新的连接
-            if (quit)
-                break;
-            tv.tv_sec = 0;  //select等待秒
-            tv.tv_usec = 0; //select等待毫秒
-            FD_init(&rest, &west, client, client_SOCK);
-            int select_ret = select(FD_SETSIZE, &rest, &west, NULL, &tv);
-            if (select_ret == -1)
+            if (client_SOCK[k]) //正在使用的套接字
             {
-                perror("select");
-                return -1;
-            }
-            else
-                for (k = 0; k < client.num; k++)
-                {
-                    if (client_SOCK[k])
-                    {
-                        memset(reply, 0, 200);
-                        int read_return = my_read_SELECT(client_SOCK[k], &rest, reply);                                 //从服务器读
-                        my_disconnect_SELECT(client, client_SOCK, &finished_num, &quit, &west, &rest, read_return, k);  //处理读的返回值
-                        int write_return = my_write_SELECT(client_SOCK[k], &west, k);                                   //从服务器写
-                        my_disconnect_SELECT(client, client_SOCK, &finished_num, &quit, &west, &rest, write_return, k); //处理写的返回值
-                    }
-                }
-        }
-        else if (client.select == POLL)
-        {
-            my_new_connection(&create, &start_mt, client_SOCK, client);
-            if (quit)
-                break;
-            int now_use_pos = 0;
-            POLLFD_init(poll_fds, client, client_SOCK, &now_use_pos);
-            int nfds = MAX_CON; //当前需要监听的套接字数量
-            int poll_return = poll(poll_fds, nfds, 0);
-            if (poll_return < 0)
-            {
-                printf("poll error\n");
-                exit(1);
-            }
-            else
-            {
-                for (k = 0; k < client.num; k++)
-                {
-                    if (client_SOCK[k])
-                    {
-                        memset(reply, 0, 200);
-                        int pos = client_SOCK[k]->poll_pos;
-                        int read_return = my_read_POLL(client_SOCK[k], poll_fds[pos], reply);
-                        my_disconnect_POLL(client, client_SOCK, &finished_num, &quit, read_return, k);
-                        int write_return = my_write_POLL(client_SOCK[k], poll_fds[pos], k);
-                        my_disconnect_POLL(client, client_SOCK, &finished_num, &quit, write_return, k);
-                    }
-                }
-            }
-        }
-        else if (client.select == EPOLL)
-        {
-            my_new_connection_EPOLL(&create, &start_mt, client_SOCK, client, efd);
-            //printf("1");
-            if (quit)
-                break;
-            int epoll_return = epoll_wait(efd, epoll_fds, MAX_CON, 0);
-            for (k = 0; k < client.num; k++)
-            {
-                if (client_SOCK[k]) //正在使用的套接字
-                {
-                    memset(reply, 0, 200);
-                    int read_return = my_read_EPOLL(client_SOCK[k], epoll_fds, reply, epoll_return);
-                    my_disconnect_EPOLL(client, client_SOCK, &finished_num, &quit, read_return, k, efd);
-                    int write_return = my_write_EPOLL(client_SOCK[k], epoll_fds, k, epoll_return);
-                    my_disconnect_EPOLL(client, client_SOCK, &finished_num, &quit, write_return, k, efd);
-                }
+                memset(reply, 0, 200);
+                int read_return = my_read_EPOLL(client_SOCK[k], epoll_fds, reply, epoll_return);
+                my_disconnect_EPOLL(client, client_SOCK, &finished_num, &quit, read_return, k, efd);
+                int write_return = my_write_EPOLL(client_SOCK[k], epoll_fds, k, epoll_return);
+                my_disconnect_EPOLL(client, client_SOCK, &finished_num, &quit, write_return, k, efd);
             }
         }
     }
+}
+int main(int argc, char *argv[])
+{
+    srand((unsigned int)time(0));
+    /*客户端基本变量*/
+    struct client_conf client;             //client数据结构
+    memset(&client, 0, sizeof(client));    //client端配置信息清零
+    client_conf_argv(argc, argv, &client); //根据main函数参数配置client
+    print_client_conf(client);             //显示client配置信息S
+
+    if (client.select == SELECT)
+        select_nonblock(client);
+    else if (client.select == POLL)
+        poll_nonblock(client);
+    else if (client.select == EPOLL)
+        epoll_nonblock(client);
+
     return 0;
 }
