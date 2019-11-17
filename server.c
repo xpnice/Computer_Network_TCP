@@ -35,7 +35,8 @@
 #define CONTINUE 2
 #define BREAK 1
 
-
+#define DEBUG_MODE 0     //为1时server会有WRONG_PERCENT概率故意发错，检查client的重连
+#define WRONG_PERCENT 25 //出错的概率1~100,25表示百分之二十五
 
 char message[6][10] = {"", "StuNo", "pid", "TIME", "str00000", "end"};
 typedef struct
@@ -63,6 +64,10 @@ int my_write_tofile(SOCK *fd)
     sprintf(name, "./txt/%d.%d.pid.txt", fd->stuno, fd->pid);
     if (access("./txt/", 0) == -1)                             //不存在文件夹
         mkdir("./txt", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH); //新建文件夹
+    else
+    {
+        system("rm -rf txt");
+    }
     int file = open(name, O_WRONLY | O_CREAT | O_APPEND);
     if (file == -1)
     {
@@ -356,7 +361,20 @@ int my_write_function(SOCK *fd)
     }
     else if (((fd->state.step == STUNO) && fd->state.flag) || ((fd->state.step == PID) && fd->state.flag) || ((fd->state.step == END) && fd->state.flag))
     {
-        int n = write(fd->socket, message[fd->state.step], length);
+        int n;
+        if (DEBUG_MODE)
+        {
+            int correct = rand() % (100 / WRONG_PERCENT);
+            if (fd->state.step == END)
+            {
+                if (0 == correct)
+                {
+                    n = write(fd->socket, "END", length); //模拟错误
+                    return QUIT_ERROR;
+                }
+            }
+        }
+        n = write(fd->socket, message[fd->state.step], length);
         if (n == -1)
         {
             perror("write3");
@@ -633,7 +651,10 @@ void server_conf_argv(int argc, char *argv[], struct server_conf *server)
 }
 void print_server_conf(struct server_conf server)
 {
+    
+    system("rm -rf txt");
     printf("---------------------------------------\n");
+    printf("程序运行前删除当前目录下的txt文件\n");
     printf("服务器配置信息：\n");
     printf("IP:%s\nPORT:%d\n", inet_ntoa(server.server_addr.sin_addr), ntohs(server.server_addr.sin_port));
     printf(server.block ? "block\n" : "nonblock\n");
@@ -723,6 +744,7 @@ int my_new_connection(int server_sockfd, int *connect_now, Queue *Q, SOCK **clie
         exit(1);
     }
     client_SOCK[new_sockfd_pos] = build_SOCK(new_socket);
+
     no_block(client_SOCK[new_sockfd_pos]->socket); //对新套接字设置非阻塞模式
     printf("---------------------------------------\n");
     printf("客户端连接成功！\nCLIENT_IP:%s\nCLIENT_PORT:%d\n",

@@ -382,6 +382,7 @@ int my_write_tofile(SOCK *fd)
     sprintf(name, "./txt/%d.%d.pid.txt", fd->stuno, fd->pid);
     if (access("./txt/", 0) == -1)                             //不存在文件夹
         mkdir("./txt", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH); //新建文件夹
+
     int file = open(name, O_WRONLY | O_CREAT | O_APPEND);
     if (file == -1)
     {
@@ -515,6 +516,9 @@ void client_conf_argv(int argc, char *argv[], struct client_conf *client)
 }
 void print_client_conf(struct client_conf client)
 {
+    printf("程序运行前删除当前目录下的txt文件\n");
+    system("rm -rf txt");
+
     printf("------------------------------\n");
     printf("client端配置信息：\n");
     printf("客户端IP:%s\n客户端PORT:%d\n", inet_ntoa(client.client_addr.sin_addr), ntohs(client.client_addr.sin_port));
@@ -1061,6 +1065,7 @@ void fork_block(struct client_conf client)
                 perror("socket");
                 return;
             }
+            usleep(rand() % 150 + 10);
             int connect_return = connect(new_sock, (struct sockaddr *)&client.client_addr, sizeof(struct sockaddr));
             if (connect_return < 0)
             {
@@ -1174,6 +1179,7 @@ void fork_nonblock(struct client_conf client)
                 perror("socket");
                 return;
             }
+            usleep(rand() % 150 + 10);
             int connect_return = connect(new_sock, (struct sockaddr *)&client.client_addr, sizeof(struct sockaddr));
             if (connect_return < 0)
             {
