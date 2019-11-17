@@ -85,10 +85,11 @@ int my_read_noblock(SOCK *fd, char *str)
     int o = 0;
     if ((fd->state.step + 1) == TIME || (fd->state.step + 1) == STR)
         o = 1;
-
     int n = read(fd->socket, str, 50);
     if (n == -1)
     {
+        if (errno == EWOULDBLOCK)
+            return UNABLE_RW;
         perror("read error");
         return QUIT_ERROR;
     }
@@ -180,6 +181,88 @@ void get_my_time(char s[])
     sprintf(s, "%4d-%02d-%02d %02d:%02d:%02d", (1900 + p->tm_year), (1 + p->tm_mon), (p->tm_mday), (p->tm_hour + 8) % 24, p->tm_min, p->tm_sec);
 }
 
+int my_write_fork(SOCK *fd)
+{
+    if (fd->state.flag == 1)
+    {
+        if (fd->state.step == STUNO)
+        {
+            unsigned int num = htonl(SNO);
+            int n = write(fd->socket, &num, 4);
+
+            if (n == -1)
+            {
+                perror("write error");
+                return QUIT_ERROR;
+            }
+            fd->stuno = SNO;
+            fd->state.flag = 0;
+            printf("ss%d[%d]向server写入%d\n", fd->socket, fd->pos, SNO);
+            return n;
+        }
+        if (fd->state.step == PID)
+        {
+
+            unsigned int num = htonl(getpid());
+            int n = write(fd->socket, &num, 4);
+            if (n == -1)
+            {
+                perror("write error");
+                return QUIT_ERROR;
+            }
+            fd->pid = getpid();
+            fd->state.flag = 0;
+            printf("ss%d[%d]向server写入%d\n", fd->socket, fd->pos, getpid());
+            return n;
+        }
+        if (fd->state.step == TIME)
+        {
+            char s[20];
+            get_my_time(s);
+
+            int n = write(fd->socket, s, 19);
+            if (n == -1)
+            {
+                perror("write error");
+                return QUIT_ERROR;
+            }
+            strncpy(fd->time, s, 19);
+            fd->state.flag = 0;
+            printf("ss%d[%d]向server写入时间戳%s\n", fd->socket, fd->pos, s);
+            return n;
+        }
+        if (fd->state.step == STR)
+        {
+            // printf("%d开始向server写入字符串\n", fd->socket);
+            fd->str = (char *)malloc(sizeof(char) * fd->lenStr);
+            int i;
+            for (i = 0; i < fd->lenStr; i++)
+                fd->str[i] = rand() % 256;
+            int n = write(fd->socket, fd->str, fd->lenStr);
+            if (n == -1)
+            {
+                perror("write error");
+                return QUIT_ERROR;
+            }
+            fd->state.flag = 0;
+            if (n == fd->lenStr)
+                printf("ss%d[%d]向server写入字符串\n", fd->socket, fd->pos);
+            else
+            {
+                printf("ss%d[%d]写入字符串长度为%d,应为%d，错误\n", fd->socket, fd->pos, n, fd->lenStr);
+                return QUIT_ERROR;
+            }
+
+            printf("ss%d[%d]写入字符串长度为%d,应为%d，正确\n", fd->socket, fd->pos, n, fd->lenStr);
+            return n;
+        }
+        if (fd->state.step == END)
+        {
+            my_write_tofile(fd);
+            return MISSION_COMPLETE;
+        }
+    }
+}
 int my_write_noblock(SOCK *fd, int pos)
 {
 
@@ -202,34 +285,18 @@ int my_write_noblock(SOCK *fd, int pos)
         }
         if (fd->state.step == PID)
         {
-            if (0)
+
+            //unsigned int num = htonl((getpid() << 16) + fd->socket);//真实socket
+            unsigned int num = htonl((getpid() << 16) + pos + 3); //虚假socket
+            int n = write(fd->socket, &num, 4);
+            if (n == -1)
             {
-                unsigned int num = htonl(getpid());
-                int n = write(fd->socket, &num, 4);
-                if (n == -1)
-                {
-                    perror("write error");
-                    return QUIT_ERROR;
-                }
-                fd->pid = getpid();
-                fd->state.flag = 0;
-                printf("ss%d[%d]向server写入%d\n", fd->socket, fd->pos, getpid());
-                return n;
+                perror("write error");
+                return QUIT_ERROR;
             }
-            else
-            {
-                //unsigned int num = htonl((getpid() << 16) + fd->socket);//真实socket
-                unsigned int num = htonl((getpid() << 16) + pos + 3); //虚假socket
-                int n = write(fd->socket, &num, 4);
-                if (n == -1)
-                {
-                    perror("write error");
-                    return QUIT_ERROR;
-                }
-                fd->pid = (getpid() << 16) + pos + 3;
-                fd->state.flag = 0;
-                return n;
-            }
+            fd->pid = (getpid() << 16) + pos + 3;
+            fd->state.flag = 0;
+            return n;
         }
         if (fd->state.step == TIME)
         {
@@ -971,21 +1038,266 @@ void epoll_nonblock(struct client_conf client)
         }
     }
 }
+
+void fork_block(struct client_conf client)
+{
+
+    //SOCK *client_SOCK[FD_SETSIZE]; //客户端SOCK指针数组,最多1000个连接
+    //client_SOCK_init(client_SOCK); //客户端SOCK指针数组初始化
+
+    int finished_num = 0; //连接成功个数
+    int connect_now = 0;  //连接个数
+    int new_sock;
+
+    char str[50];
+    int status; //waitpid的状态判断
+    //char buf[1024];
+    while (1)
+    {
+        if (finished_num != client.num)
+        {
+            if ((new_sock = socket(PF_INET, SOCK_STREAM, 0)) < 0)
+            {
+                perror("socket");
+                return;
+            }
+            int connect_return = connect(new_sock, (struct sockaddr *)&client.client_addr, sizeof(struct sockaddr));
+            if (connect_return < 0)
+            {
+                perror("conncet");
+                return;
+            }
+            else
+            {
+                int id;
+                id = fork();
+                if (id < 0)
+                {
+                    perror("fork");
+                    return;
+                }
+                if (id == 0)
+                {
+                    SOCK *fd;
+                    fd = build_SOCK(new_sock);
+                    printf("成功连接到server端，进行阻塞状态的信息收发,子进程pid为%d\n", getpid());
+                    int func_return;
+                    while (1)
+                    {
+                        memset(str, '\0', 50);
+                        func_return = my_read_noblock(fd, str);
+                        if (func_return == QUIT_ERROR)
+                        {
+                            /*当出现错误时，调用kill -9关闭子进程*/
+                            close(fd->socket);
+                            free(fd->str);
+                            free(fd);
+                            printf("read过程出现错误，使用kill -9 杀死子进程\n");
+                            char s[20];
+                            sprintf(s, "kill -9 %d", getpid());
+                            system(s);
+                        }
+
+                        func_return = my_write_fork(fd);
+                        //printf("%d", fd->state.step);
+                        if (func_return == QUIT_ERROR)
+                        {
+                            /*当出现错误时，调用kill -9关闭子进程*/
+                            printf("write过程出现错误，使用kill -9 杀死子进程\n");
+                            char s[20];
+                            sprintf(s, "kill -9 %d", getpid());
+                            system(s);
+                        }
+                        if (func_return == MISSION_COMPLETE)
+                        {
+                            printf("1\n");
+                            /*当完成交互任务后，调用kill -7关闭子进程*/
+                            close(fd->socket);
+                            free(fd->str);
+                            free(fd);
+                            printf("完成信息交互任务，用kill -7 结束子进程\n");
+                            char s[20];
+                            sprintf(s, "kill -7 %d", getpid());
+                            system(s);
+                        }
+                    }
+                }
+
+                else if (id > 0)
+                {
+                    //建立一个新的连接
+                    connect_now++;
+                    //阻塞判断子进程是否完全退出
+                    waitpid(-1, &status, 0);
+                    //判断子进程退出状态
+                    if (WIFSIGNALED(status))
+                    {
+                        //子进程错误退出，无动作执行
+                        if (WTERMSIG(status) == 9)
+                        {
+                            ;
+                        }
+                        //子进程正常退出，connect_now--
+                        if (WTERMSIG(status) == 7)
+                        {
+                            finished_num++;
+                            connect_now--;
+                        }
+                    }
+                }
+            }
+        }
+        else
+            break;
+    }
+    return;
+}
+void fork_nonblock(struct client_conf client)
+{
+
+    //SOCK *client_SOCK[FD_SETSIZE]; //客户端SOCK指针数组,最多1000个连接
+    //client_SOCK_init(client_SOCK); //客户端SOCK指针数组初始化
+
+    int finished_num = 0; //连接成功个数
+    int connect_now = 0;  //连接个数
+    int new_sock;
+
+    char str[50];
+    int status; //waitpid的状态判断
+    //char buf[1024];
+    while (1)
+    {
+        if (finished_num != client.num)
+        {
+            if ((new_sock = socket(PF_INET, SOCK_STREAM, 0)) < 0)
+            {
+                perror("socket");
+                return;
+            }
+            int connect_return = connect(new_sock, (struct sockaddr *)&client.client_addr, sizeof(struct sockaddr));
+            if (connect_return < 0)
+            {
+                perror("conncet");
+                if (errno == EWOULDBLOCK)
+                    continue;
+                return;
+            }
+            else
+            {
+
+                int id;
+                int flags = fcntl(new_sock, F_GETFL, 0);
+                fcntl(new_sock, F_SETFL, flags | O_NONBLOCK);
+                //设置非阻塞
+                id = fork();
+                if (id < 0)
+                {
+                    perror("fork");
+                    return;
+                }
+                if (id == 0)
+                {
+                    SOCK *fd;
+                    fd = build_SOCK(new_sock);
+                    printf("成功连接到server端，进行非阻塞状态的信息收发,子进程pid为%d\n", getpid());
+                    int func_return;
+                    while (1)
+                    {
+                        memset(str, '\0', 50);
+                        func_return = my_read_noblock(fd, str);
+                        if (func_return == UNABLE_RW)
+                            continue;
+                        if (func_return == QUIT_ERROR)
+                        {
+                            /*当出现错误时，调用kill -9关闭子进程*/
+                            close(fd->socket);
+                            free(fd->str);
+                            free(fd);
+                            printf("read过程出现错误，使用kill -9 杀死子进程\n");
+                            char s[20];
+                            sprintf(s, "kill -9 %d", getpid());
+                            system(s);
+                        }
+
+                        func_return = my_write_fork(fd);
+                        //printf("%d", fd->state.step);
+                        if (func_return == QUIT_ERROR)
+                        {
+                            /*当出现错误时，调用kill -9关闭子进程*/
+                            printf("write过程出现错误，使用kill -9 杀死子进程\n");
+                            char s[20];
+                            sprintf(s, "kill -9 %d", getpid());
+                            system(s);
+                        }
+                        if (func_return == MISSION_COMPLETE)
+                        {
+                            //printf("1\n");
+                            /*当完成交互任务后，调用kill -7关闭子进程*/
+                            close(fd->socket);
+                            free(fd->str);
+                            free(fd);
+                            printf("完成信息交互任务，用kill -7 结束子进程\n");
+                            char s[20];
+                            sprintf(s, "kill -7 %d", getpid());
+                            system(s);
+                        }
+                    }
+                }
+
+                else if (id > 0)
+                {
+                    //建立一个新的连接
+                    connect_now++;
+                    //阻塞判断子进程是否完全退出
+                    waitpid(-1, &status, 0);
+                    //判断子进程退出状态
+                    if (WIFSIGNALED(status))
+                    {
+                        //子进程错误退出，无动作执行
+                        if (WTERMSIG(status) == 9)
+                        {
+                            ;
+                        }
+                        //子进程正常退出，connect_now--
+                        if (WTERMSIG(status) == 7)
+                        {
+                            finished_num++;
+                            connect_now--;
+                        }
+                    }
+                }
+            }
+        }
+        else
+            break;
+    }
+    return;
+}
 int main(int argc, char *argv[])
 {
-    srand((unsigned int)time(0));
+
     /*客户端基本变量*/
     struct client_conf client;             //client数据结构
     memset(&client, 0, sizeof(client));    //client端配置信息清零
     client_conf_argv(argc, argv, &client); //根据main函数参数配置client
     print_client_conf(client);             //显示client配置信息S
 
-    if (client.select == SELECT)
-        select_nonblock(client);
-    else if (client.select == POLL)
-        poll_nonblock(client);
-    else if (client.select == EPOLL)
-        epoll_nonblock(client);
+    if (!client.fork)
+    {
+        if (client.select == SELECT)
+            select_nonblock(client);
+        else if (client.select == POLL)
+            poll_nonblock(client);
+        else if (client.select == EPOLL)
+            epoll_nonblock(client);
+    }
+    else
+    {
+        if (client.block)
+            fork_block(client);
+        else
+            fork_nonblock(client);
+    }
 
     return 0;
 }

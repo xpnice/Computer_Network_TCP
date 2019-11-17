@@ -35,6 +35,8 @@
 #define CONTINUE 2
 #define BREAK 1
 
+
+
 char message[6][10] = {"", "StuNo", "pid", "TIME", "str00000", "end"};
 typedef struct
 {
@@ -54,7 +56,6 @@ typedef struct
     int n_str;    //收到的str长度
     int poll_pos; //该套接字在poll_fds结构体数组中的下标
 } SOCK;
-
 
 int my_write_tofile(SOCK *fd)
 {
@@ -89,13 +90,13 @@ int my_write_tofile(SOCK *fd)
 //在my_read_noblock函数中使用的read套接字后的错误判断
 int read_error_judge(int ret, SOCK *fd, int *connect_num)
 {
-
     if (ret == -1 && (errno != EAGAIN || errno != EWOULDBLOCK))
     {
+        printf("1\n");
         perror("read");
         return QUIT_ERROR;
     }
-    else if (ret == 0)
+    if (ret == 0)
     {
         if (fd->state.step == END)
         {
@@ -115,6 +116,8 @@ int read_error_judge(int ret, SOCK *fd, int *connect_num)
             /*to do  实现client端套接字退出后的维护工作*/
         }
     }
+    if (errno == EWOULDBLOCK)
+        return UNABLE_RW;
 }
 
 //寻找一个文件描述符是否在epoll_wait返回的events数组中，可读
@@ -144,7 +147,7 @@ int IsInEvents_Writeable(int fd, struct epoll_event events[], int ret)
 /*
     读工具函数:当有数据可读时调用，目前测试过适用于select/poll/epoll
 */
-int my_read_noblock(SOCK *fd, int *connect_num)
+int my_read_function(SOCK *fd, int *connect_num)
 {
     if (fd->state.step == STUNO)
     {
@@ -155,6 +158,7 @@ int my_read_noblock(SOCK *fd, int *connect_num)
             return QUIT_ERROR;
         if (ret == MISSION_COMPLETE)
             return MISSION_COMPLETE;
+
         if (n == 4) //判断是否接收到四字节
         {
             //存入socket结构体
@@ -167,6 +171,8 @@ int my_read_noblock(SOCK *fd, int *connect_num)
         }
         else
         {
+            if (ret == UNABLE_RW)
+                return UNABLE_RW;
             //收到错误数据，中断连接
             unsigned int client_num = ntohl(*((int *)buf));
             printf("收到错误学号%d，中断与ss%d 的连接\n", client_num, fd->socket);
@@ -184,6 +190,7 @@ int my_read_noblock(SOCK *fd, int *connect_num)
             return QUIT_ERROR;
         if (ret == MISSION_COMPLETE)
             return MISSION_COMPLETE;
+
         if (n == 4) //判断是否接收到四字节
         {
             //存入socket结构体
@@ -195,6 +202,8 @@ int my_read_noblock(SOCK *fd, int *connect_num)
         }
         else
         {
+            if (ret == UNABLE_RW)
+                return UNABLE_RW;
             //收到错误数据，中断连接
             printf("收到错误进程号，中断与ss%d 的连接\n", fd->socket);
             /*to do  实现client端套接字退出后的维护工作*/
@@ -210,8 +219,11 @@ int my_read_noblock(SOCK *fd, int *connect_num)
             return QUIT_ERROR;
         if (ret == MISSION_COMPLETE)
             return MISSION_COMPLETE;
+
         if (n != 19) //判断是否接收到19字节
         {
+            if (ret == UNABLE_RW)
+                return UNABLE_RW;
             //收到错误数据，中断连接
             printf("收到错误时间戳，中断与ss%d 的连接\n", fd->socket);
             /*to do  实现client端套接字退出后的维护工作*/
@@ -226,6 +238,7 @@ int my_read_noblock(SOCK *fd, int *connect_num)
     {
         if (fd->n_str == 0)
             fd->str = (char *)malloc(fd->lenStr * sizeof(char));
+        // printf("%d",fd->n_str);
         int n = read(fd->socket, &fd->str[fd->n_str], fd->lenStr);
         int ret = read_error_judge(n, fd, connect_num);
         if (ret == QUIT_ERROR)
@@ -235,7 +248,8 @@ int my_read_noblock(SOCK *fd, int *connect_num)
 
         //收到错误数据，中断连接
         //printf("收到ss%d长度字符串%d\n", fd->socket, n);
-        fd->n_str += n;
+        if (n > 0)
+            fd->n_str += n;
         /*to do  实现client端套接字退出后的维护工作*/
         if (fd->n_str == fd->lenStr)
         {
@@ -243,6 +257,9 @@ int my_read_noblock(SOCK *fd, int *connect_num)
             fd->state.step++;
             fd->state.flag = 1;
         }
+        if (ret == UNABLE_RW)
+            return UNABLE_RW;
+
         return n;
     }
     if (fd->state.step == END)
@@ -254,6 +271,7 @@ int my_read_noblock(SOCK *fd, int *connect_num)
             return QUIT_ERROR;
         if (ret == MISSION_COMPLETE)
             return MISSION_COMPLETE;
+
         if (n > 0)
         {
             printf("ss%d 结束交互后未退出\n", fd->socket);
@@ -261,6 +279,8 @@ int my_read_noblock(SOCK *fd, int *connect_num)
             /*to do  实现client端套接字退出后的维护工作*/
             return QUIT_ERROR;
         }
+        if (ret == UNABLE_RW)
+            return UNABLE_RW;
         return n;
     }
     return 0;
@@ -274,7 +294,7 @@ int my_read_POLL(SOCK *fd, struct pollfd poll_fd, int *connect_num)
     if (poll_fd.revents & POLLIN)
     {
         //printf("接下来执行my_read_noblock\n");
-        return my_read_noblock(fd, connect_num);
+        return my_read_function(fd, connect_num);
     }
 
     return UNABLE_RW;
@@ -285,7 +305,7 @@ int my_read_POLL(SOCK *fd, struct pollfd poll_fd, int *connect_num)
 int my_read_EPOLL(SOCK *fd, struct epoll_event events[], int func_ret, int *connect_num)
 {
     if (IsInEvents_Readable(fd->socket, events, func_ret))
-        return my_read_noblock(fd, connect_num);
+        return my_read_function(fd, connect_num);
     return UNABLE_RW;
 }
 /*
@@ -294,16 +314,16 @@ int my_read_EPOLL(SOCK *fd, struct epoll_event events[], int func_ret, int *conn
 int my_read_SELECT(SOCK *fd, fd_set *my_read, int *connect_num)
 {
     if (FD_ISSET(fd->socket, my_read))
-        return my_read_noblock(fd, connect_num);
+        return my_read_function(fd, connect_num);
     return UNABLE_RW;
 }
 
 /*
     写工具函数:当有数据可写时调用，目前测试过适用于select/poll/epoll
 */
-int my_write_noblock(SOCK *fd)
+int my_write_function(SOCK *fd)
 {
-    //printf("我是my_write_noblock\n");
+    //printf("我是my_write_function\n");
     int length = strlen(message[fd->state.step]);
     if ((fd->state.step == STR) && fd->state.flag)
     {
@@ -356,8 +376,8 @@ int my_write_POLL(SOCK *fd, struct pollfd poll_fd)
 {
     if (poll_fd.revents & POLLOUT)
     {
-        //printf("my_write_noblock\n");
-        return my_write_noblock(fd);
+        //printf("my_write_function\n");
+        return my_write_function(fd);
     }
 
     return UNABLE_RW;
@@ -368,7 +388,7 @@ int my_write_POLL(SOCK *fd, struct pollfd poll_fd)
 int my_write_EPOLL(SOCK *fd, struct epoll_event events[], int func_ret)
 {
     if (IsInEvents_Writeable(fd->socket, events, func_ret))
-        return my_write_noblock(fd);
+        return my_write_function(fd);
     return UNABLE_RW;
 }
 /*
@@ -378,12 +398,13 @@ int my_write_SELECT(SOCK *fd, fd_set *my_write)
 {
 
     if (FD_ISSET(fd->socket, my_write))
-        return my_write_noblock(fd);
+        return my_write_function(fd);
     return UNABLE_RW;
 }
 
 int init_SOCK(SOCK *fd, int socket_fd)
 {
+    srand((unsigned)time(NULL)); //随机数种子
     fd->state.flag = 1;
     fd->state.step = 1;
     fd->socket = socket_fd;
@@ -852,9 +873,9 @@ void FD_init(fd_set *rest, fd_set *west, int server_sockfd, SOCK **client_SOCK)
 
 void POLLFD_init(struct pollfd poll_fds[], int server_sockfd, SOCK **client_SOCK, int *use_now)
 {
-    memset(poll_fds, 0, sizeof(struct pollfd)*MAXCONNECTION); //清空数组
-    poll_fds[0].fd = server_sockfd;        //把监听套接字放入数组
-    poll_fds[0].events = POLLIN;           //设置关注读事件
+    memset(poll_fds, 0, sizeof(struct pollfd) * MAXCONNECTION); //清空数组
+    poll_fds[0].fd = server_sockfd;                             //把监听套接字放入数组
+    poll_fds[0].events = POLLIN;                                //设置关注读事件
     (*use_now)++;
     int i;
     for (i = 0; i < MAXCONNECTION; i++) //遍历已使用套接字数组
@@ -1056,11 +1077,233 @@ void epoll_nonblock(int server_sockfd)
     }
     close(efd);
 }
+
+void fork_block(int listen_sock)
+{
+
+    //SOCK *client_SOCK[FD_SETSIZE]; //客户端SOCK指针数组,最多1000个连接
+    //client_SOCK_init(client_SOCK); //客户端SOCK指针数组初始化
+    struct sockaddr_in client; //client的网络地址结构体
+    socklen_t len = sizeof(client);
+    int pid = getpid();
+
+    int finished_num = 0; //连接成功个数
+    int connect_now = 0;  //连接个数
+
+    int status; //waitpid的状态判断
+    char buf[1024];
+    while (1)
+    {
+        printf("阻塞状态等待连接\n");
+        int new_sock = accept(listen_sock, (struct sockaddr *)&client, &len);
+        //printf("%d",new_sock);
+        if (new_sock < 0)
+        {
+            perror("----accept----fail\n");
+            close(listen_sock);
+            exit(-5);
+        }
+        else
+        {
+            int id;
+            id = fork();
+            if (id < 0)
+            {
+                perror("fork");
+                return;
+            }
+            if (id == 0)
+            {
+                SOCK *fd;
+                fd = build_SOCK(new_sock);
+                printf("成功连接到client端，进行阻塞状态的信息收发,子进程pid为%d\n", getpid());
+                int func_return;
+                while (1)
+                {
+
+                    func_return = my_write_function(fd);
+                    printf("%d", func_return);
+                    fflush(stdout);
+                    //printf("%d", fd->state.step);
+                    if (func_return == QUIT_ERROR)
+                    {
+                        /*当出现错误时，调用kill -9关闭子进程*/
+                        printf("write过程出现错误，使用kill -9 杀死子进程\n");
+                        char s[20];
+                        sprintf(s, "kill -9 %d", getpid());
+                        system(s);
+                    }
+
+                    func_return = my_read_function(fd, &finished_num);
+
+                    if (func_return == QUIT_ERROR)
+                    {
+                        /*当出现错误时，调用kill -9关闭子进程*/
+                        close(fd->socket);
+                        free(fd->str);
+                        free(fd);
+                        printf("read过程出现错误，使用kill -9 杀死子进程\n");
+                        char s[20];
+                        sprintf(s, "kill -9 %d", getpid());
+                        system(s);
+                    }
+                    if (func_return == MISSION_COMPLETE)
+                    {
+                        /*当完成交互任务后，调用kill -7关闭子进程*/
+                        close(fd->socket);
+                        free(fd->str);
+                        free(fd);
+                        printf("完成信息交互任务，用kill -7 结束子进程\n");
+                        char s[20];
+                        sprintf(s, "kill -7 %d", getpid());
+                        system(s);
+                    }
+                }
+            }
+            else if (id > 0)
+            {
+                //建立一个新的连接
+                connect_now++;
+                //阻塞判断子进程是否完全退出
+                waitpid(-1, &status, 0);
+                //判断子进程退出状态
+                if (WIFSIGNALED(status))
+                {
+                    //子进程错误退出，无动作执行
+                    if (WTERMSIG(status) == 9)
+                    {
+                        ;
+                    }
+                    //子进程正常退出，connect_now--
+                    if (WTERMSIG(status) == 7)
+                    {
+                        finished_num++;
+                        connect_now--;
+                    }
+                }
+            }
+        }
+    }
+
+    return;
+}
+void fork_nonblock(int listen_sock)
+{
+    no_block(listen_sock);     //设置为非阻塞
+    struct sockaddr_in client; //client的网络地址结构体
+    socklen_t len = sizeof(client);
+    int pid = getpid();
+
+    int finished_num = 0; //连接成功个数
+    int connect_now = 0;  //连接个数
+
+    int status; //waitpid的状态判断
+    char buf[1024];
+    while (1)
+    {
+        //printf("阻塞状态等待连接\n");
+        int new_sock = accept(listen_sock, (struct sockaddr *)&client, &len);
+        //printf("%d",new_sock);
+        if (new_sock < 0)
+        {
+            if (errno != EWOULDBLOCK)
+            {
+                perror("----accept----fail\n");
+                close(listen_sock);
+                exit(-5);
+            }
+            continue;
+        }
+        else
+        {
+            int id;
+            no_block(new_sock); //套接字申请成功后置非阻塞
+            id = fork();
+            if (id < 0)
+            {
+                perror("fork");
+                return;
+            }
+            if (id == 0)
+            {
+                SOCK *fd;
+                fd = build_SOCK(new_sock);
+                printf("成功连接到client端，进行阻塞状态的信息收发,子进程pid为%d\n", getpid());
+                int func_return;
+                while (1)
+                {
+                    func_return = my_write_function(fd);
+                    // printf("%d", func_return);
+                    //fflush(stdout);
+                    //printf("%d", fd->state.step);
+                    if (func_return == QUIT_ERROR)
+                    {
+                        /*当出现错误时，调用kill -9关闭子进程*/
+                        printf("write过程出现错误，使用kill -9 杀死子进程\n");
+                        char s[20];
+                        sprintf(s, "kill -9 %d", getpid());
+                        system(s);
+                    }
+                    //printf("1\n");
+                    func_return = my_read_function(fd, &finished_num);
+                    if (UNABLE_RW == func_return)
+                        continue;
+                    if (QUIT_ERROR == func_return)
+                    {
+                        /*当出现错误时，调用kill -9关闭子进程*/
+                        close(fd->socket);
+                        free(fd->str);
+                        free(fd);
+                        printf("read过程出现错误，使用kill -9 杀死子进程\n");
+                        char s[20];
+                        sprintf(s, "kill -9 %d", getpid());
+                        system(s);
+                    }
+                    if (MISSION_COMPLETE == func_return)
+                    {
+                        /*当完成交互任务后，调用kill -7关闭子进程*/
+                        close(fd->socket);
+                        free(fd->str);
+                        free(fd);
+                        printf("完成信息交互任务，用kill -7 结束子进程\n");
+                        char s[20];
+                        sprintf(s, "kill -7 %d", getpid());
+                        system(s);
+                    }
+                }
+            }
+            else if (id > 0)
+            {
+                //建立一个新的连接
+                connect_now++;
+                //阻塞判断子进程是否完全退出
+                waitpid(-1, &status, 0);
+                //判断子进程退出状态
+                if (WIFSIGNALED(status))
+                {
+                    //子进程错误退出，无动作执行
+                    if (WTERMSIG(status) == 9)
+                    {
+                        ;
+                    }
+                    //子进程正常退出，connect_now--
+                    if (WTERMSIG(status) == 7)
+                    {
+                        finished_num++;
+                        connect_now--;
+                    }
+                }
+            }
+        }
+    }
+
+    return;
+}
 int main(int argc, char *argv[])
 {
+
     /*服务器变量*/
-    srand((unsigned int)time(0));
-    struct server_conf server; //server数据结构SS
+    struct server_conf server;          //server数据结构SS
     int server_sockfd;                  //监听套接字
     memset(&server, 0, sizeof(server)); //server端配置信息清零
 
@@ -1070,14 +1313,22 @@ int main(int argc, char *argv[])
     server_tcp_init(server, &server_sockfd); //socket+nonblock?+reuse+bind+listen
 
     /*多client端处理*/
-
-    if (server.select == SELECT)
-        select_nonblock(server_sockfd); //select非阻塞模式
-    else if (server.select == POLL)
-        poll_nonblock(server_sockfd); //poll非阻塞模式
-    else if (server.select == EPOLL)
-        epoll_nonblock(server_sockfd); //epoll非阻塞模式
-
+    if (!server.fork)
+    {
+        if (server.select == SELECT)
+            select_nonblock(server_sockfd); //select非阻塞模式
+        else if (server.select == POLL)
+            poll_nonblock(server_sockfd); //poll非阻塞模式
+        else if (server.select == EPOLL)
+            epoll_nonblock(server_sockfd); //epoll非阻塞模式
+    }
+    else
+    {
+        if (server.block)
+            fork_block(server_sockfd);
+        else
+            fork_nonblock(server_sockfd);
+    }
     close(server_sockfd);
     return 0;
 }
