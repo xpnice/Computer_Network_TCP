@@ -46,10 +46,11 @@ typedef struct
     int lenStr;         //应该传输字符串长度
     unsigned int stuno; //学号
     unsigned int pid;   //pid
-    char time[20];      //时间戳
-    char *str;          //字符串
-    STATE state;        //收发状态
-    int poll_pos;       //用于poll方式定位该描述符在数组中的位置
+    int pos;
+    char time[20]; //时间戳
+    char *str;     //字符串
+    STATE state;   //收发状态
+    int poll_pos;  //用于poll方式定位该描述符在数组中的位置
 } SOCK;
 
 char message[5][10] = {"StuNo", "pid", "TIME", "str00000", "end"};
@@ -80,14 +81,11 @@ int IsInEvents_Writeable(int fd, struct epoll_event events[], int ret)
 
 int my_read_noblock(SOCK *fd, char *str)
 {
-    //  if (fd->socket < 0)
-    //   return -2;
     int o = 0;
     if ((fd->state.step + 1) == TIME || (fd->state.step + 1) == STR)
         o = 1;
 
     int n = read(fd->socket, str, 50);
-    printf("%s\n", str);
     if (n == -1)
     {
         perror("read error");
@@ -96,7 +94,6 @@ int my_read_noblock(SOCK *fd, char *str)
     if (n == 0)
     {
         perror("server端断开连接\n");
-        /**/
         return QUIT_ERROR;
     }
     if (n != (strlen(message[fd->state.step + 1]) + o))
@@ -104,8 +101,7 @@ int my_read_noblock(SOCK *fd, char *str)
         printf("server端传入数据长度错误,应传入%d,实际传入%d", strlen(message[fd->state.step + 1]), n);
         return QUIT_ERROR;
     }
-    printf("套接字ss%d[%d]收到了%s\n", fd->socket, fd->state.step, str);
-
+    printf("套接字ss%d[%d]收到了%s\n", fd->socket, fd->pos, str);
     int check_return = chech_read(str, fd);
     return check_return;
 }
@@ -120,8 +116,7 @@ int chech_read(char *str, SOCK *fd)
         {
             fd->state.step++;
             fd->state.flag = 1;
-            // printf("%s\n", str);
-            printf("套接字ss%d由状态%d转变为状态%d\n", fd->socket, fd->state.step - 1, fd->state.step);
+            printf("套接字ss%d[%d]转变为状态%s\n", fd->socket, fd->pos, message[fd->state.step]);
         }
         else
         {
@@ -130,7 +125,6 @@ int chech_read(char *str, SOCK *fd)
     }
     else
     {
-        //printf("%d\n", strncmp(str, message[fd->state.step + 1], 3));
         //处理str传输
         if ((strncmp(str, message[fd->state.step + 1], 3) == 0) && (strlen(str) == 8))
         {
@@ -138,8 +132,6 @@ int chech_read(char *str, SOCK *fd)
             fd->lenStr = atoi(&str[3]);
             fd->state.step++;
             fd->state.flag = 1;
-            // printf("%s\n", str);
-            printf("套接字ss%d当前状态:%d\n", fd->socket, fd->state.step);
         }
         else
         {
@@ -204,7 +196,7 @@ int my_write_noblock(SOCK *fd, int pos)
             }
             fd->stuno = SNO;
             fd->state.flag = 0;
-            printf("%d向server写入%d\n", fd->socket, SNO);
+            printf("ss%d[%d]向server写入%d\n", fd->socket, fd->pos, SNO);
             return n;
         }
         if (fd->state.step == PID)
@@ -220,13 +212,13 @@ int my_write_noblock(SOCK *fd, int pos)
                 }
                 fd->pid = getpid();
                 fd->state.flag = 0;
-                printf("%d向server写入%d\n", fd->socket, getpid());
+                printf("ss%d[%d]向server写入%d\n", fd->socket, fd->pos, getpid());
                 return n;
             }
             else
             {
-                //unsigned int num = htonl((getpid() << 16) + fd->socket);
-                unsigned int num = htonl((getpid() << 16) + pos + 3);
+                //unsigned int num = htonl((getpid() << 16) + fd->socket);//真实socket
+                unsigned int num = htonl((getpid() << 16) + pos + 3); //虚假socket
                 int n = write(fd->socket, &num, 4);
                 if (n == -1)
                 {
@@ -251,7 +243,7 @@ int my_write_noblock(SOCK *fd, int pos)
             }
             strncpy(fd->time, s, 19);
             fd->state.flag = 0;
-            printf("ss%d向server写入时间戳%s\n", fd->socket, s);
+            printf("ss%d[%d]向server写入时间戳%s\n", fd->socket, fd->pos, s);
             return n;
         }
         if (fd->state.step == STR)
@@ -269,10 +261,14 @@ int my_write_noblock(SOCK *fd, int pos)
             }
             fd->state.flag = 0;
             if (n == fd->lenStr)
-                printf("ss%d向server写入字符串\n", fd->socket);
+                printf("ss%d[%d]向server写入字符串\n", fd->socket, fd->pos);
             else
+            {
+                printf("ss%d[%d]写入字符串长度为%d,应为%d，错误\n", fd->socket, fd->pos, n, fd->lenStr);
                 return QUIT_ERROR;
-            printf("str返回值%d,应该返回值%d\n", n, fd->lenStr);
+            }
+
+            printf("ss%d[%d]写入字符串长度为%d,应为%d，正确\n", fd->socket, fd->pos, n, fd->lenStr);
             return n;
         }
         if (fd->state.step == END)
@@ -349,6 +345,7 @@ int init_SOCK(SOCK *fd, int socket_fd) //初始化结构体
     fd->pid = 0;
     fd->lenStr = 0;
     fd->str = NULL;
+    fd->pos = -1;
     return 1;
 }
 
@@ -538,7 +535,9 @@ int my_new_connection(int *create, long *start_mt, SOCK **client_SOCK, struct cl
         if (my_check_nonblock_connection(connect_return, socket_new) == CONNECTION_SUCCESS) //非阻塞情况下检查是否真的连接成功，防止未连接计数
         {
             client_SOCK[*create] = build_SOCK(socket_new); //刚连接时指针为NULL需要动态申请
-            printf("第%d个连接成功!套接字为:%d\n", ++(*create), socket_new);
+            client_SOCK[*create]->pos = *create + 3;
+            printf("*********************************************\n");
+            printf("第%d个连接成功!套接字为:%d[%d]\n", ++(*create), socket_new, client_SOCK[*create]->pos);
         }
         else
         {
@@ -569,6 +568,7 @@ int my_new_connection_EPOLL(int *create, long *start_mt, SOCK **client_SOCK, str
         if (my_check_nonblock_connection(connect_return, socket_new) == CONNECTION_SUCCESS) //非阻塞情况下检查是否真的连接成功，防止未连接计数
         {
             client_SOCK[*create] = build_SOCK(socket_new); //刚连接时指针为NULL需要动态申请
+            client_SOCK[*create]->pos = *create + 3;
             //加入监听
             struct epoll_event epoll_temp;
             epoll_temp.data.fd = socket_new;
@@ -576,12 +576,14 @@ int my_new_connection_EPOLL(int *create, long *start_mt, SOCK **client_SOCK, str
             int epoll_ret = epoll_ctl(efd, EPOLL_CTL_ADD, client_SOCK[*create]->socket, &epoll_temp);
             if (epoll_ret == -1)
             {
-                
+
                 perror("epoll_ctl");
                 printf("我在my_new_connection_EPOLL里\n");
                 return -1;
             }
-            printf("第%d个连接成功!套接字为:%d\n", ++(*create), socket_new);
+            printf("*********************************************\n");
+            ;
+            printf("第%d个连接成功!套接字为:%d[%d]\n", ++(*create), socket_new, client_SOCK[*create]->pos);
         }
         else
         {
@@ -594,7 +596,7 @@ int my_new_connection_EPOLL(int *create, long *start_mt, SOCK **client_SOCK, str
 
 int my_reconnect(int pos, SOCK **client_SOCK, struct client_conf client)
 {
-    printf("套接字%d正在重连…………\n", client_SOCK[pos]->socket);
+    printf("套接字%d[%d]正在重连…………\n", client_SOCK[pos]->socket, client_SOCK[pos]->pos);
     //usleep(1000); //延时等待系统close套接字
     int socket_new;
     if ((socket_new = socket(PF_INET, SOCK_STREAM, 0)) < 0)
@@ -612,7 +614,10 @@ int my_reconnect(int pos, SOCK **client_SOCK, struct client_conf client)
     if (my_check_nonblock_connection(connect_return, socket_new) == CONNECTION_SUCCESS) //非阻塞情况下检查是否真的连接成功，防止未连接计数
     {
         client_SOCK[pos] = build_SOCK(socket_new); //刚连接时指针为NULL需要动态申请
-        printf("重连成功!套接字为:%d,伪装套接字为%d\n", socket_new, pos + 3);
+        client_SOCK[pos]->pos = pos + 3;
+        printf("*********************************************\n");
+        ;
+        printf("重连成功!套接字为:%d,伪装套接字为%d\n", socket_new, client_SOCK[pos]->pos);
         return CONNECTION_SUCCESS;
     }
     /*未连接成功*/
@@ -622,7 +627,7 @@ int my_reconnect(int pos, SOCK **client_SOCK, struct client_conf client)
 
 int my_reconnect_EPOLL(int pos, SOCK **client_SOCK, struct client_conf client, int efd)
 {
-    printf("套接字%d正在重连…………\n", client_SOCK[pos]->socket);
+    printf("套接字%d[%d]正在重连…………\n", client_SOCK[pos]->socket);
     //usleep(1000); //延时等待系统close套接字
     int socket_new;
     if ((socket_new = socket(PF_INET, SOCK_STREAM, 0)) < 0)
@@ -640,7 +645,10 @@ int my_reconnect_EPOLL(int pos, SOCK **client_SOCK, struct client_conf client, i
     if (my_check_nonblock_connection(connect_return, socket_new) == CONNECTION_SUCCESS) //非阻塞情况下检查是否真的连接成功，防止未连接计数
     {
         client_SOCK[pos] = build_SOCK(socket_new); //刚连接时指针为NULL需要动态申请
-        printf("重连成功!套接字为:%d,伪装套接字为%d\n", socket_new, pos + 3);
+        client_SOCK[pos]->pos = pos + 3;
+        printf("*********************************************\n");
+        ;
+        printf("重连成功!套接字为:%d,伪装套接字为%d\n", socket_new, client_SOCK[pos]->pos);
         //加入监听
         struct epoll_event epoll_temp;
         epoll_temp.data.fd = socket_new;
@@ -670,16 +678,19 @@ int my_disconnect_SELECT(struct client_conf client, SOCK **client_SOCK, int *fin
         free(client_SOCK[pos]->str); //对于重连的，如果在str前错误，str尚未申请
     if (status == QUIT_ERROR)
     {
-        printf("套接字ss%d异常退出重新连接\n", client_SOCK[pos]->socket);
+        printf("套接字ss%d[%d]异常退出重新连接\n", client_SOCK[pos]->socket, client_SOCK[pos]->pos);
+        printf("*********************************************\n");
+        ;
         //close(client_SOCK[pos]->socket);
         my_reconnect(pos, client_SOCK, client);
     }
     else if (status == MISSION_COMPLETE)
     {
 
-        printf("套接字ss%d完成退出\n", client_SOCK[pos]->socket);
+        printf("套接字ss%d[%d]完成退出\n", client_SOCK[pos]->socket, client_SOCK[pos]->pos);
         (*finished_num)++;
-        printf("当前完成数:%d\n", *finished_num);
+        printf("当前交互完成数:%d\n", *finished_num);
+
         if (client.num == *finished_num)
             *quit = 1;
         free(client_SOCK[pos]);
@@ -696,16 +707,18 @@ int my_disconnect_POLL(struct client_conf client, SOCK **client_SOCK, int *finis
         free(client_SOCK[pos]->str); //对于重连的，如果在str前错误，str尚未申请
     if (status == QUIT_ERROR)
     {
-        printf("套接字ss%d异常退出重新连接\n", client_SOCK[pos]->socket);
+        printf("套接字ss%d[%d]异常退出重新连接\n", client_SOCK[pos]->socket, client_SOCK[pos]->pos);
+
         //close(client_SOCK[pos]->socket);
         my_reconnect(pos, client_SOCK, client);
     }
     else if (status == MISSION_COMPLETE)
     {
 
-        printf("套接字ss%d完成退出\n", client_SOCK[pos]->socket);
+        printf("套接字ss%d[%d]完成退出\n", client_SOCK[pos]->socket, client_SOCK[pos]->pos);
         (*finished_num)++;
         printf("当前完成数:%d\n", *finished_num);
+
         if (client.num == *finished_num)
             *quit = 1;
         free(client_SOCK[pos]);
@@ -717,21 +730,24 @@ int my_disconnect_EPOLL(struct client_conf client, SOCK **client_SOCK, int *fini
 {
     if (status != QUIT_ERROR && status != MISSION_COMPLETE)
         return -1;
-    
+
     if (client_SOCK[pos]->str)
         free(client_SOCK[pos]->str); //对于重连的，如果在str前错误，str尚未申请
     if (status == QUIT_ERROR)
     {
-        printf("套接字ss%d异常退出重新连接\n", client_SOCK[pos]->socket);
+        printf("套接字ss%d[%d]异常退出重新连接\n", client_SOCK[pos]->socket, client_SOCK[pos]->pos);
+        printf("*********************************************\n");
+        ;
         close(client_SOCK[pos]->socket);
-        my_reconnect_EPOLL(pos, client_SOCK, client,efd);
+        my_reconnect_EPOLL(pos, client_SOCK, client, efd);
     }
     else if (status == MISSION_COMPLETE)
     {
 
-        printf("套接字ss%d完成退出\n", client_SOCK[pos]->socket);
+        printf("套接字ss%d[%d]完成退出\n", client_SOCK[pos]->socket, client_SOCK[pos]->pos);
         (*finished_num)++;
         printf("当前完成数:%d\n", *finished_num);
+
         if (client.num == *finished_num)
             *quit = 1;
         int epoll_ret = epoll_ctl(efd, EPOLL_CTL_DEL, client_SOCK[pos]->socket, NULL);
