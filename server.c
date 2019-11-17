@@ -64,10 +64,6 @@ int my_write_tofile(SOCK *fd)
     sprintf(name, "./txt/%d.%d.pid.txt", fd->stuno, fd->pid);
     if (access("./txt/", 0) == -1)                             //不存在文件夹
         mkdir("./txt", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH); //新建文件夹
-    else
-    {
-        system("rm -rf txt");
-    }
     int file = open(name, O_WRONLY | O_CREAT | O_APPEND);
     if (file == -1)
     {
