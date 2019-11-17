@@ -310,8 +310,10 @@ int my_write_SELECT(SOCK *fd, fd_set *my_write, int pos)
 
 int my_write_tofile(SOCK *fd)
 {
-    char name[30];
-    sprintf(name, "%d.%d.pid.txt", fd->stuno, fd->pid);
+    char name[40];
+    sprintf(name, "./txt/%d.%d.pid.txt", fd->stuno, fd->pid);
+    if (access("./txt/", 0) == -1) //不存在文件夹
+        mkdir("./txt", S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH); //新建文件夹
     int file = open(name, O_WRONLY | O_CREAT | O_APPEND);
     if (file == -1)
     {
@@ -333,7 +335,7 @@ int my_write_tofile(SOCK *fd)
     write(file, fd->str, fd->lenStr);
     close(file);
 
-    return 0;
+    return 1;
 }
 
 int init_SOCK(SOCK *fd, int socket_fd) //初始化结构体
@@ -849,10 +851,11 @@ void client_SOCK_init(SOCK **client_SOCK, struct client_conf client)
 int main(int argc, char *argv[])
 {
     /*客户端基本变量*/
-    struct client_conf client;                                         //client数据结构
-    memset(&client, 0, sizeof(client));                                //client端配置信息清零
-    client_conf_argv(argc, argv, &client);                             //根据main函数参数配置client
-    print_client_conf(client);                                         //显示client配置信息
+    struct client_conf client;             //client数据结构
+    memset(&client, 0, sizeof(client));    //client端配置信息清零
+    client_conf_argv(argc, argv, &client); //根据main函数参数配置client
+    print_client_conf(client);             //显示client配置信息
+
     SOCK **client_SOCK = (SOCK **)malloc(client.num * sizeof(SOCK *)); //客户端SOCK指针数组,最多1000个连接
     client_SOCK_init(client_SOCK, client);                             //客户端SOCK指针数组初始化
 
@@ -888,12 +891,11 @@ int main(int argc, char *argv[])
     {
         if (client.select == SELECT)
         {
-            my_new_connection(&create, &start_mt, client_SOCK, client);
-            //printf("1");
+            my_new_connection(&create, &start_mt, client_SOCK, client); //监听到并建立新的连接
             if (quit)
                 break;
-            tv.tv_sec = 0;
-            tv.tv_usec = 0;
+            tv.tv_sec = 0;  //select等待秒
+            tv.tv_usec = 0; //select等待毫秒
             FD_init(&rest, &west, client, client_SOCK);
             int select_ret = select(FD_SETSIZE, &rest, &west, NULL, &tv);
             if (select_ret == -1)
@@ -907,17 +909,16 @@ int main(int argc, char *argv[])
                     if (client_SOCK[k])
                     {
                         memset(reply, 0, 200);
-                        int read_return = my_read_SELECT(client_SOCK[k], &rest, reply);
-                        my_disconnect_SELECT(client, client_SOCK, &finished_num, &quit, &west, &rest, read_return, k);
-                        int write_return = my_write_SELECT(client_SOCK[k], &west, k);
-                        my_disconnect_SELECT(client, client_SOCK, &finished_num, &quit, &west, &rest, write_return, k);
+                        int read_return = my_read_SELECT(client_SOCK[k], &rest, reply);                                 //从服务器读
+                        my_disconnect_SELECT(client, client_SOCK, &finished_num, &quit, &west, &rest, read_return, k);  //处理读的返回值
+                        int write_return = my_write_SELECT(client_SOCK[k], &west, k);                                   //从服务器写
+                        my_disconnect_SELECT(client, client_SOCK, &finished_num, &quit, &west, &rest, write_return, k); //处理写的返回值
                     }
                 }
         }
         else if (client.select == POLL)
         {
             my_new_connection(&create, &start_mt, client_SOCK, client);
-            //printf("1");
             if (quit)
                 break;
             int now_use_pos = 0;
@@ -964,13 +965,6 @@ int main(int argc, char *argv[])
                 }
             }
         }
-    }
-
-    for (k = 0; k < client.num; k++)
-    {
-        //close(client_SOCK[k]->socket);
-        //free(client_SOCK[k]->str);
-        //free(client_SOCK[k]);
     }
     return 0;
 }
